@@ -9,8 +9,10 @@ https://github.com/octop162/notifbar
 ## 開発フロー
 
 - タスク管理は **GitHub Issues** で行う
-- 作業開始前に `gh issue list` で未着手のissueを確認する
 - issueに対応するブランチを切って作業し、PRでマージする
+    - マージはユーザーに確認後行う
+- マージ完了後は GitHub issue をクローズする
+- issue毎の作業は連続して行わない
 
 ## コーディング規約
 
@@ -159,3 +161,4 @@ Windows (x86_64-pc-windows-msvc) ターゲットでビルドする。
 2. Windows設定 → システム → 通知 を開く
 3. 「通知アクセス」セクションでアプリを許可する
 4. アプリを再起動
+
