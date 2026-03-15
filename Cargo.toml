@@ -1,0 +1,15 @@
+[package]
+name = "notifbar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+windows = { version = "0.59", features = [
+    "UI_Notifications_Management",
+    "UI_Notifications",
+    "Foundation",
+] }
+tokio = { version = "1", features = ["full"] }
+eframe = "0.31"
+rusqlite = { version = "0.31", features = ["bundled"] }
+tray-icon = "0.19"
