@@ -26,6 +26,8 @@ pub struct Notification {
     pub body: Option<String>,
     /// トースト通知の起動URL（<toast launch="..."> 属性）
     pub launch_url: Option<String>,
+    /// アプリアイコンの画像バイト列（DBには保存しない。通知受信時のみ設定）
+    pub icon_bytes: Option<Vec<u8>>,
     /// 通知の到着時刻（ISO 8601 文字列: "YYYY-MM-DDTHH:MM:SS"）
     pub arrived_at: String,
     /// 通知が削除された時刻（None = まだアクティブ）
@@ -92,6 +94,7 @@ impl Database {
                 removed_at: row.get(7)?,
                 // SQLite に boolean 型はないため INTEGER (0/1) で保存し変換する
                 read: row.get::<_, i64>(8)? != 0,
+                icon_bytes: None,
             })
         })?;
         rows.collect()
@@ -147,6 +150,7 @@ mod tests {
             title: Some("Hello".to_string()),
             body: Some("World".to_string()),
             launch_url: None,
+            icon_bytes: None,
             arrived_at: "2026-03-15T00:00:00".to_string(),
             removed_at: None,
             read: false,
@@ -169,6 +173,7 @@ mod tests {
             title: None,
             body: None,
             launch_url: None,
+            icon_bytes: None,
             arrived_at: "2026-03-15T00:00:00".to_string(),
             removed_at: None,
             read: false,
@@ -191,6 +196,7 @@ mod tests {
             title: None,
             body: None,
             launch_url: None,
+            icon_bytes: None,
             arrived_at: "2026-03-15T00:00:00".to_string(),
             removed_at: None,
             read: false,
@@ -212,6 +218,7 @@ mod tests {
                 title: None,
                 body: None,
                 launch_url: None,
+                icon_bytes: None,
                 arrived_at: "2026-03-15T00:00:00".to_string(),
                 removed_at: None,
                 read: false,
@@ -233,6 +240,7 @@ mod tests {
             title: None,
             body: None,
             launch_url: None,
+            icon_bytes: None,
             arrived_at: "2026-03-15T00:00:00".to_string(),
             removed_at: None,
             read: false,
