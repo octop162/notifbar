@@ -4,6 +4,7 @@
 use crate::db::{Database, Notification};
 use crate::notification::{NotificationEvent, iso8601_utc_to_jst};
 use eframe::egui;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use tray_icon::menu::{MenuEvent, MenuId};
@@ -50,6 +51,8 @@ pub struct NotifBarApp {
     theme: Theme,
     /// DB クリア確認モーダルの表示状態
     confirm_clear_open: bool,
+    /// アプリ名をキーとするアイコンテクスチャのキャッシュ
+    icon_cache: HashMap<String, egui::TextureHandle>,
 }
 
 impl NotifBarApp {
@@ -75,6 +78,7 @@ impl NotifBarApp {
             settings_open: false,
             theme: Theme::Dark,
             confirm_clear_open: false,
+            icon_cache: HashMap::new(),
         }
     }
 
@@ -183,9 +187,17 @@ impl eframe::App for NotifBarApp {
         while let Ok(event) = self.receiver.try_recv() {
             match event {
                 NotificationEvent::Added(n) => {
+                    let mut n = *n;
                     // DB に書き込み
                     if let Err(e) = self.db.insert(&n) {
                         eprintln!("DB挿入エラー: {e}");
+                    }
+                    // アイコンバイト列をテクスチャに変換してキャッシュする
+                    if let Some(bytes) = n.icon_bytes.take()
+                        && !self.icon_cache.contains_key(&n.app_name)
+                        && let Some(tex) = load_icon_texture(ctx, &n.app_name, &bytes)
+                    {
+                        self.icon_cache.insert(n.app_name.clone(), tex);
                     }
                     // win_id が重複する場合はスキップ
                     let already_exists = n
@@ -299,7 +311,8 @@ impl eframe::App for NotifBarApp {
             } else {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for n in &self.notifications {
-                        render_notification_card(ui, n);
+                        let icon = self.icon_cache.get(&n.app_name);
+                        render_notification_card(ui, n, icon);
                         ui.add_space(4.0);
                     }
                 });
@@ -311,8 +324,23 @@ impl eframe::App for NotifBarApp {
     }
 }
 
-/// 通知1件分のカードを描画する。launch_url がある場合はクリックでURLを開く。
-fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
+/// アイコン画像のバイト列を egui テクスチャに変換する。
+/// デコードに失敗した場合は None を返す。
+fn load_icon_texture(ctx: &egui::Context, name: &str, bytes: &[u8]) -> Option<egui::TextureHandle> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let color_image =
+        egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba.as_raw());
+    Some(ctx.load_texture(name, color_image, egui::TextureOptions::default()))
+}
+
+/// 通知1件分のカードを描画する。icon があればカード左端に表示する。
+fn render_notification_card(
+    ui: &mut egui::Ui,
+    n: &Notification,
+    icon: Option<&egui::TextureHandle>,
+) {
     let dark_mode = ui.visuals().dark_mode;
 
     let bg_color = if dark_mode {
@@ -338,24 +366,36 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            // ヘッダ行: アプリ名 + 到着時刻
             ui.horizontal(|ui| {
-                ui.colored_label(app_name_color, &n.app_name);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let jst = iso8601_utc_to_jst(&n.arrived_at);
-                    let time_str = jst.get(11..19).unwrap_or(&jst);
-                    ui.weak(time_str);
+                // アプリアイコン表示
+                if let Some(tex) = icon {
+                    ui.image((tex.id(), egui::vec2(32.0, 32.0)));
+                    ui.add_space(4.0);
+                }
+
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+
+                    // ヘッダ行: アプリ名 + 到着時刻
+                    ui.horizontal(|ui| {
+                        ui.colored_label(app_name_color, &n.app_name);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let jst = iso8601_utc_to_jst(&n.arrived_at);
+                            let time_str = jst.get(11..19).unwrap_or(&jst);
+                            ui.weak(time_str);
+                        });
+                    });
+
+                    // タイトル
+                    if let Some(title) = &n.title {
+                        ui.label(egui::RichText::new(title).strong());
+                    }
+
+                    // 本文
+                    if let Some(body) = &n.body {
+                        ui.label(egui::RichText::new(body).color(ui.visuals().weak_text_color()));
+                    }
                 });
             });
-
-            // タイトル
-            if let Some(title) = &n.title {
-                ui.label(egui::RichText::new(title).strong());
-            }
-
-            // 本文
-            if let Some(body) = &n.body {
-                ui.label(egui::RichText::new(body).color(ui.visuals().weak_text_color()));
-            }
         });
 }

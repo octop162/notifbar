@@ -9,6 +9,7 @@ use crate::db;
 use std::collections::HashSet;
 use std::sync::mpsc;
 use windows::Foundation::{AsyncStatus, IAsyncOperation};
+use windows::Storage::Streams::{DataReader, IRandomAccessStreamReference};
 use windows::UI::Notifications::Management::{
     UserNotificationListener, UserNotificationListenerAccessStatus,
 };
@@ -24,7 +25,7 @@ const POLL_INTERVAL_SECS: u64 = 2;
 #[derive(Debug)]
 pub enum NotificationEvent {
     /// 新しい通知が追加された
-    Added(db::Notification),
+    Added(Box<db::Notification>),
     /// 通知が削除された（win_id で識別）
     Removed {
         /// Windows通知ID
@@ -69,7 +70,7 @@ pub fn start_listener(tx: mpsc::Sender<NotificationEvent>) -> windows::core::Res
             if !known_ids.contains(&id)
                 && let Some(parsed) = parse_user_notification(&user_notif, id)
             {
-                let _ = tx.send(NotificationEvent::Added(parsed));
+                let _ = tx.send(NotificationEvent::Added(Box::new(parsed)));
             }
         }
 
@@ -123,6 +124,8 @@ fn parse_user_notification(user_notif: &UserNotification, win_id: u32) -> Option
     // launch URL の取得
     let launch_url = extract_launch_url(user_notif);
 
+    let icon_bytes = fetch_icon_bytes(user_notif);
+
     Some(db::Notification {
         id: None,
         win_id: Some(win_id as i64),
@@ -130,10 +133,133 @@ fn parse_user_notification(user_notif: &UserNotification, win_id: u32) -> Option
         title,
         body,
         launch_url,
+        icon_bytes,
         arrived_at,
         removed_at: None,
         read: false,
     })
+}
+
+/// AppInfo から GetLogo() でアプリアイコン画像のバイト列を取得する。
+/// UWP アプリでは GetLogo() を使い、Win32 アプリでは AUMID 経由で Shell API にフォールバックする。
+fn fetch_icon_bytes(user_notif: &UserNotification) -> Option<Vec<u8>> {
+    use windows::Foundation::Size;
+
+    let app_info = user_notif.AppInfo().ok()?;
+    let display_info = app_info.DisplayInfo().ok()?;
+
+    // 方法1: GetLogo() (UWP・パッケージアプリ向け)
+    if let Ok(logo_ref) = display_info.GetLogo(Size {
+        Width: 32.0,
+        Height: 32.0,
+    }) && let Some(bytes) = read_stream_ref(logo_ref.into())
+    {
+        return Some(bytes);
+    }
+
+    // 方法2: AUMID から Shell API でアイコン取得 (Win32 アプリ向け)
+    let aumid = app_info.AppUserModelId().ok()?.to_string();
+    if !aumid.is_empty() {
+        return fetch_icon_from_shell(&aumid);
+    }
+
+    None
+}
+
+/// IRandomAccessStreamReference を開いてバイト列として読み取る。
+fn read_stream_ref(logo_ref: IRandomAccessStreamReference) -> Option<Vec<u8>> {
+    let stream = wait_for_async(&logo_ref.OpenReadAsync().ok()?).ok()?;
+    let size = stream.Size().ok()? as u32;
+    if size == 0 {
+        return None;
+    }
+    let reader = DataReader::CreateDataReader(&stream).ok()?;
+    wait_for_async(&reader.LoadAsync(size).ok()?).ok()?;
+    let mut bytes = vec![0u8; size as usize];
+    reader.ReadBytes(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// AUMID から Shell の IShellItemImageFactory::GetImage でアイコンを取得し PNG バイト列で返す。
+/// Win32 アプリ向けフォールバック。
+fn fetch_icon_from_shell(aumid: &str) -> Option<Vec<u8>> {
+    use windows::Win32::Foundation::SIZE;
+    use windows::Win32::UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF};
+
+    let path = format!("shell:AppsFolder\\{aumid}");
+    let path_wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+
+    unsafe {
+        let factory: IShellItemImageFactory =
+            match SHCreateItemFromParsingName(windows::core::PCWSTR(path_wide.as_ptr()), None) {
+                Ok(f) => f,
+                Err(_) => return None,
+            };
+
+        let hbm = match factory.GetImage(SIZE { cx: 32, cy: 32 }, SIIGBF(0)) {
+            Ok(h) => h,
+            Err(_) => return None,
+        };
+
+        hbitmap_to_png(hbm, 32, 32)
+    }
+}
+
+/// HBITMAP を RGBA ピクセル列に変換して PNG バイト列として返す。
+fn hbitmap_to_png(
+    hbm: windows::Win32::Graphics::Gdi::HBITMAP,
+    width: i32,
+    height: i32,
+) -> Option<Vec<u8>> {
+    use windows::Win32::Graphics::Gdi::*;
+
+    let rgba = unsafe {
+        let dc = CreateCompatibleDC(None);
+        if dc.is_invalid() {
+            return None;
+        }
+        let prev = SelectObject(dc, HGDIOBJ(hbm.0));
+
+        let mut bmi: BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height; // 負値でトップダウン
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = 0; // BI_RGB
+
+        let mut bgra = vec![0u8; (width * height * 4) as usize];
+        let lines = GetDIBits(
+            dc,
+            hbm,
+            0,
+            height as u32,
+            Some(bgra.as_mut_ptr().cast()),
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(dc, prev);
+        let _ = DeleteDC(dc);
+        let _ = DeleteObject(HGDIOBJ(hbm.0));
+
+        if lines == 0 {
+            return None;
+        }
+
+        // Windows は BGRA 形式なので RGBA に変換する
+        for chunk in bgra.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+        }
+        bgra
+    };
+
+    let img = image::RgbaImage::from_raw(width as u32, height as u32, rgba)?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
 }
 
 /// トースト通知の Content XML から launch 属性値を取得する。
