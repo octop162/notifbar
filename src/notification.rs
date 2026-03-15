@@ -228,6 +228,39 @@ fn unix_secs_to_iso8601(unix_secs: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{s:02}")
 }
 
+/// ISO 8601 UTC文字列（"YYYY-MM-DDTHH:MM:SS"）をUnix秒に変換する。
+fn parse_iso8601(s: &str) -> Option<i64> {
+    if s.len() < 19 {
+        return None;
+    }
+    let y: i64 = s[0..4].parse().ok()?;
+    let m: i64 = s[5..7].parse().ok()?;
+    let d: i64 = s[8..10].parse().ok()?;
+    let h: i64 = s[11..13].parse().ok()?;
+    let min: i64 = s[14..16].parse().ok()?;
+    let sec: i64 = s[17..19].parse().ok()?;
+
+    // Howard Hinnant のアルゴリズムで日付をUnix日数に変換する
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = (y - era * 400) as u32;
+    let m_adj = if m > 2 { m as u32 - 3 } else { m as u32 + 9 };
+    let doy = (153 * m_adj + 2) / 5 + d as u32 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe as i64 - 719_468;
+
+    Some(days * 86400 + h * 3600 + min * 60 + sec)
+}
+
+/// ISO 8601 UTC文字列をJST（UTC+9）のISO 8601文字列に変換する。
+pub fn iso8601_utc_to_jst(s: &str) -> String {
+    const JST_OFFSET: i64 = 9 * 3600;
+    match parse_iso8601(s) {
+        Some(unix_secs) => unix_secs_to_iso8601(unix_secs + JST_OFFSET),
+        None => s.to_string(),
+    }
+}
+
 /// WinRT の DateTime.UniversalTime (100ナノ秒単位、1601-01-01起点) を ISO 8601 文字列に変換する。
 fn winrt_datetime_to_iso8601(universal_time: i64) -> String {
     // 1601-01-01 から 1970-01-01 までの100ナノ秒間隔数
@@ -291,5 +324,29 @@ mod tests {
             winrt_datetime_to_iso8601(universal_time),
             "2026-03-15T14:30:45"
         );
+    }
+
+    #[test]
+    fn test_iso8601_utc_to_jst_basic() {
+        // 2026-03-15T00:00:00 UTC → 2026-03-15T09:00:00 JST
+        assert_eq!(
+            iso8601_utc_to_jst("2026-03-15T00:00:00"),
+            "2026-03-15T09:00:00"
+        );
+    }
+
+    #[test]
+    fn test_iso8601_utc_to_jst_date_rollover() {
+        // 2026-03-15T23:00:00 UTC → 2026-03-16T08:00:00 JST
+        assert_eq!(
+            iso8601_utc_to_jst("2026-03-15T23:00:00"),
+            "2026-03-16T08:00:00"
+        );
+    }
+
+    #[test]
+    fn test_iso8601_utc_to_jst_invalid() {
+        // 不正な文字列はそのまま返す
+        assert_eq!(iso8601_utc_to_jst("invalid"), "invalid");
     }
 }

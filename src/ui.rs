@@ -2,7 +2,7 @@
 // メインウィンドウのタイムライン表示を担うモジュール。
 
 use crate::db::{Database, Notification};
-use crate::notification::NotificationEvent;
+use crate::notification::{NotificationEvent, iso8601_utc_to_jst};
 use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -243,7 +243,8 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
             ui.horizontal(|ui| {
                 ui.colored_label(egui::Color32::from_rgb(130, 190, 255), &n.app_name);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let time_str = n.arrived_at.get(11..19).unwrap_or(&n.arrived_at);
+                    let jst = iso8601_utc_to_jst(&n.arrived_at);
+                    let time_str = jst.get(11..19).unwrap_or(&jst);
                     ui.weak(time_str);
                     if is_removed {
                         ui.weak("[削除済]");
