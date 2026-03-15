@@ -8,6 +8,12 @@ use std::sync::mpsc;
 use tray_icon::menu::{MenuEvent, MenuId};
 use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
 
+/// バックグラウンドのトレイイベントスレッドからUIスレッドへ送るコマンド。
+enum TrayCommand {
+    /// ウィンドウの表示/非表示を切り替える
+    ToggleVisibility,
+}
+
 /// タイムラインUIアプリ。eframe::Appを実装し、通知履歴をスクロール可能なリストで表示する。
 pub struct NotifBarApp {
     /// 表示中の通知リスト（新しい順）
@@ -22,6 +28,12 @@ pub struct NotifBarApp {
     exit_id: MenuId,
     /// ウィンドウの現在の表示状態
     window_visible: bool,
+    /// トレイイベントスレッドへのコマンド送信端
+    tray_tx: mpsc::SyncSender<TrayCommand>,
+    /// UIスレッド側のコマンド受信端
+    tray_rx: mpsc::Receiver<TrayCommand>,
+    /// トレイポーリングスレッドが起動済みかどうか
+    tray_thread_started: bool,
 }
 
 impl NotifBarApp {
@@ -33,6 +45,7 @@ impl NotifBarApp {
         show_hide_id: MenuId,
         exit_id: MenuId,
     ) -> Self {
+        let (tray_tx, tray_rx) = mpsc::sync_channel(8);
         Self {
             notifications: initial,
             receiver,
@@ -40,6 +53,9 @@ impl NotifBarApp {
             show_hide_id,
             exit_id,
             window_visible: true,
+            tray_tx,
+            tray_rx,
+            tray_thread_started: false,
         }
     }
 
@@ -54,6 +70,42 @@ impl NotifBarApp {
             self.window_visible = true;
         }
     }
+
+    /// バックグラウンドでトレイイベントをポーリングするスレッドを起動する。
+    /// egui::Context は Clone + Send なので安全にスレッド間で共有できる。
+    /// 50ms ごとに MenuEvent と TrayIconEvent を確認し、イベント発生時に
+    /// tray_tx へコマンドを送り ctx.request_repaint() でUIスレッドを起こす。
+    fn spawn_tray_thread(
+        ctx: egui::Context,
+        tray_tx: mpsc::SyncSender<TrayCommand>,
+        show_hide_id: MenuId,
+        exit_id: MenuId,
+    ) {
+        std::thread::spawn(move || {
+            loop {
+                while let Ok(event) = MenuEvent::receiver().try_recv() {
+                    if event.id == show_hide_id {
+                        tray_tx.send(TrayCommand::ToggleVisibility).ok();
+                        ctx.request_repaint();
+                    } else if event.id == exit_id {
+                        std::process::exit(0);
+                    }
+                }
+                while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        tray_tx.send(TrayCommand::ToggleVisibility).ok();
+                        ctx.request_repaint();
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+    }
 }
 
 impl eframe::App for NotifBarApp {
@@ -65,24 +117,21 @@ impl eframe::App for NotifBarApp {
             self.window_visible = false;
         }
 
-        // トレイメニューイベントを処理する
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == self.show_hide_id {
-                self.toggle_visibility(ctx);
-            } else if event.id == self.exit_id {
-                std::process::exit(0);
-            }
+        // 初回 update() 時にトレイポーリングスレッドを起動する
+        if !self.tray_thread_started {
+            Self::spawn_tray_thread(
+                ctx.clone(),
+                self.tray_tx.clone(),
+                self.show_hide_id.clone(),
+                self.exit_id.clone(),
+            );
+            self.tray_thread_started = true;
         }
 
-        // トレイアイコンクリックイベントを処理する（左クリックで表示切替）
-        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                self.toggle_visibility(ctx);
+        // トレイスレッドからのコマンドを処理する
+        while let Ok(cmd) = self.tray_rx.try_recv() {
+            match cmd {
+                TrayCommand::ToggleVisibility => self.toggle_visibility(ctx),
             }
         }
 
