@@ -5,6 +5,8 @@ use crate::db::{Database, Notification};
 use crate::notification::NotificationEvent;
 use eframe::egui;
 use std::sync::mpsc;
+use tray_icon::menu::{MenuEvent, MenuId};
+use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
 
 /// タイムラインUIアプリ。eframe::Appを実装し、通知履歴をスクロール可能なリストで表示する。
 pub struct NotifBarApp {
@@ -14,25 +16,76 @@ pub struct NotifBarApp {
     receiver: mpsc::Receiver<NotificationEvent>,
     /// DB接続（通知の永続化に使用）
     db: Database,
+    /// トレイメニューの「表示/非表示」アイテムID
+    show_hide_id: MenuId,
+    /// トレイメニューの「終了」アイテムID
+    exit_id: MenuId,
+    /// ウィンドウの現在の表示状態
+    window_visible: bool,
 }
 
 impl NotifBarApp {
-    /// 初期通知リスト・チャネルレシーバー・DB接続を受け取り、アプリを生成する。
+    /// 初期通知リスト・チャネルレシーバー・DB接続・トレイメニューIDを受け取り、アプリを生成する。
     pub fn new(
         initial: Vec<Notification>,
         receiver: mpsc::Receiver<NotificationEvent>,
         db: Database,
+        show_hide_id: MenuId,
+        exit_id: MenuId,
     ) -> Self {
         Self {
             notifications: initial,
             receiver,
             db,
+            show_hide_id,
+            exit_id,
+            window_visible: true,
+        }
+    }
+
+    /// ウィンドウの表示/非表示を切り替える。
+    fn toggle_visibility(&mut self, ctx: &egui::Context) {
+        if self.window_visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.window_visible = false;
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.window_visible = true;
         }
     }
 }
 
 impl eframe::App for NotifBarApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ×ボタンによるクローズリクエストをキャンセルしてトレイに最小化する
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.window_visible = false;
+        }
+
+        // トレイメニューイベントを処理する
+        while let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id == self.show_hide_id {
+                self.toggle_visibility(ctx);
+            } else if event.id == self.exit_id {
+                std::process::exit(0);
+            }
+        }
+
+        // トレイアイコンクリックイベントを処理する（左クリックで表示切替）
+        while let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                self.toggle_visibility(ctx);
+            }
+        }
+
         // チャネルから新着・削除イベントをすべて受け取って状態に反映する
         while let Ok(event) = self.receiver.try_recv() {
             match event {
