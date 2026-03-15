@@ -15,6 +15,15 @@ enum TrayCommand {
     Hide,
 }
 
+/// テーマの種類。ライトモードとダークモードを切り替えるために使用する。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Theme {
+    /// ダークモード
+    Dark,
+    /// ライトモード
+    Light,
+}
+
 /// タイムラインUIアプリ。eframe::Appを実装し、通知履歴をスクロール可能なリストで表示する。
 pub struct NotifBarApp {
     /// 表示中の通知リスト（新しい順）
@@ -35,6 +44,10 @@ pub struct NotifBarApp {
     tray_rx: mpsc::Receiver<TrayCommand>,
     /// トレイポーリングスレッドが起動済みかどうか
     tray_thread_started: bool,
+    /// 設定画面の表示状態
+    settings_open: bool,
+    /// 現在のテーマ
+    theme: Theme,
 }
 
 impl NotifBarApp {
@@ -57,6 +70,8 @@ impl NotifBarApp {
             tray_tx,
             tray_rx,
             tray_thread_started: false,
+            settings_open: false,
+            theme: Theme::Dark,
         }
     }
 
@@ -194,6 +209,66 @@ impl eframe::App for NotifBarApp {
                 }
             }
         }
+
+        // 設定画面モーダル
+        if self.settings_open {
+            egui::Window::new("設定")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_min_width(260.0);
+
+                    ui.heading("テーマ");
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(self.theme == Theme::Dark, "ダーク")
+                            .clicked()
+                        {
+                            self.theme = Theme::Dark;
+                            ctx.set_visuals(egui::Visuals::dark());
+                        }
+                        if ui
+                            .selectable_label(self.theme == Theme::Light, "ライト")
+                            .clicked()
+                        {
+                            self.theme = Theme::Light;
+                            ctx.set_visuals(egui::Visuals::light());
+                        }
+                    });
+
+                    ui.add_space(12.0);
+                    ui.heading("データ");
+                    ui.separator();
+                    if ui.button("通知履歴をすべて削除").clicked() {
+                        if let Err(e) = self.db.delete_all() {
+                            eprintln!("DBクリアエラー: {e}");
+                        } else {
+                            self.notifications.clear();
+                        }
+                    }
+
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if ui.button("閉じる").clicked() {
+                            self.settings_open = false;
+                        }
+                    });
+                });
+        }
+
+        // 画面下部ステータスバー
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("⚙").on_hover_text("設定").clicked() {
+                    self.settings_open = !self.settings_open;
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.weak(format!("通知数: {}", self.notifications.len()));
+                });
+            });
+        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.notifications.is_empty() {

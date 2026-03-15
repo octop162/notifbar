@@ -107,6 +107,13 @@ impl Database {
         Ok(())
     }
 
+    /// notifications テーブルの全行を削除する。
+    /// 設定画面の「DB クリア」ボタンから呼び出す。
+    pub fn delete_all(&self) -> Result<()> {
+        self.conn.execute_batch("DELETE FROM notifications;")?;
+        Ok(())
+    }
+
     /// Windows通知ID (win_id) に対応する行の removed_at を更新する。
     /// NotificationChanged イベントで通知削除を検知したときに呼び出す。
     pub fn set_removed_at(&self, win_id: i64, removed_at: &str) -> Result<()> {
@@ -192,6 +199,28 @@ mod tests {
         db.set_removed_at(3001, "2026-03-15T01:00:00").unwrap();
         let all = db.query_all().unwrap();
         assert_eq!(all[0].removed_at.as_deref(), Some("2026-03-15T01:00:00"));
+    }
+
+    #[test]
+    fn test_delete_all() {
+        let db = in_memory_db();
+        for win_id in [5001i64, 5002, 5003] {
+            db.insert(&Notification {
+                id: None,
+                win_id: Some(win_id),
+                app_name: "App".to_string(),
+                title: None,
+                body: None,
+                launch_url: None,
+                arrived_at: "2026-03-15T00:00:00".to_string(),
+                removed_at: None,
+                read: false,
+            })
+            .unwrap();
+        }
+        assert_eq!(db.query_all().unwrap().len(), 3);
+        db.delete_all().unwrap();
+        assert!(db.query_all().unwrap().is_empty());
     }
 
     #[test]
