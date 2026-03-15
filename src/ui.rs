@@ -216,14 +216,37 @@ impl eframe::App for NotifBarApp {
     }
 }
 
+/// `cmd /c start` に渡す引数を返す。
+fn url_open_args(url: &str) -> [&str; 4] {
+    ["/c", "start", "", url]
+}
+
 /// launch_url をブラウザまたは関連アプリで開く。
 fn open_url(url: &str) {
     // CREATE_NO_WINDOW: cmdウィンドウをフラッシュさせない
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let _ = std::process::Command::new("cmd")
-        .args(["/c", "start", "", url])
+        .args(url_open_args(url))
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_url_open_args_http() {
+        let args = url_open_args("https://example.com/path?q=1");
+        assert_eq!(args, ["/c", "start", "", "https://example.com/path?q=1"]);
+    }
+
+    #[test]
+    fn test_url_open_args_custom_scheme() {
+        // アプリ独自スキーム（ms-windows-store: 等）もそのまま渡す
+        let args = url_open_args("ms-windows-store://home");
+        assert_eq!(args, ["/c", "start", "", "ms-windows-store://home"]);
+    }
 }
 
 /// 通知1件分のカードを描画する。launch_url がある場合はクリックでURLを開く。
