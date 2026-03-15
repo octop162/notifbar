@@ -48,6 +48,8 @@ pub struct NotifBarApp {
     settings_open: bool,
     /// 現在のテーマ
     theme: Theme,
+    /// DB クリア確認モーダルの表示状態
+    confirm_clear_open: bool,
 }
 
 impl NotifBarApp {
@@ -72,6 +74,7 @@ impl NotifBarApp {
             tray_thread_started: false,
             settings_open: false,
             theme: Theme::Dark,
+            confirm_clear_open: false,
         }
     }
 
@@ -210,6 +213,31 @@ impl eframe::App for NotifBarApp {
             }
         }
 
+        // DB クリア確認モーダル
+        if self.confirm_clear_open {
+            egui::Window::new("確認")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("通知履歴をすべて削除しますか？");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("削除する").clicked() {
+                            if let Err(e) = self.db.delete_all() {
+                                eprintln!("DBクリアエラー: {e}");
+                            } else {
+                                self.notifications.clear();
+                            }
+                            self.confirm_clear_open = false;
+                        }
+                        if ui.button("キャンセル").clicked() {
+                            self.confirm_clear_open = false;
+                        }
+                    });
+                });
+        }
+
         // 設定画面モーダル
         if self.settings_open {
             egui::Window::new("設定")
@@ -242,11 +270,7 @@ impl eframe::App for NotifBarApp {
                     ui.heading("データ");
                     ui.separator();
                     if ui.button("通知履歴をすべて削除").clicked() {
-                        if let Err(e) = self.db.delete_all() {
-                            eprintln!("DBクリアエラー: {e}");
-                        } else {
-                            self.notifications.clear();
-                        }
+                        self.confirm_clear_open = true;
                     }
 
                     ui.add_space(12.0);
@@ -264,9 +288,6 @@ impl eframe::App for NotifBarApp {
                 if ui.button("⚙").on_hover_text("設定").clicked() {
                     self.settings_open = !self.settings_open;
                 }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.weak(format!("通知数: {}", self.notifications.len()));
-                });
             });
         });
 
