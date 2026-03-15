@@ -4,6 +4,7 @@
 use crate::db::{Database, Notification};
 use crate::notification::{NotificationEvent, iso8601_utc_to_jst};
 use eframe::egui;
+use std::os::windows::process::CommandExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use tray_icon::menu::{MenuEvent, MenuId};
@@ -215,9 +216,20 @@ impl eframe::App for NotifBarApp {
     }
 }
 
+/// launch_url をブラウザまたは関連アプリで開く。
+fn open_url(url: &str) {
+    // CREATE_NO_WINDOW: cmdウィンドウをフラッシュさせない
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", "start", "", url])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+}
+
 /// 通知1件分のカードを描画する。launch_url がある場合はクリックでURLを開く。
 fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
     let is_removed = n.removed_at.is_some();
+    let has_url = n.launch_url.is_some();
 
     let bg_color = if is_removed {
         egui::Color32::from_gray(40)
@@ -231,7 +243,7 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
         egui::Color32::from_rgb(80, 140, 220)
     };
 
-    egui::Frame::new()
+    let frame_response = egui::Frame::new()
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(4))
         .fill(bg_color)
@@ -262,4 +274,20 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
                 ui.label(egui::RichText::new(body).color(egui::Color32::from_gray(200)));
             }
         });
+
+    // launch_url がある場合: カード全体をクリック可能にしてURLを開く
+    if has_url {
+        let interact = ui.interact(
+            frame_response.response.rect,
+            ui.id().with(n.id),
+            egui::Sense::click(),
+        );
+        if interact
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+            && let Some(url) = &n.launch_url
+        {
+            open_url(url);
+        }
+    }
 }
