@@ -120,16 +120,51 @@ fn parse_user_notification(user_notif: &UserNotification, win_id: u32) -> Option
     // タイトル・本文の取得
     let (title, body) = extract_text(user_notif);
 
+    // launch URL の取得
+    let launch_url = extract_launch_url(user_notif);
+
     Some(db::Notification {
         id: None,
         win_id: Some(win_id as i64),
         app_name,
         title,
         body,
+        launch_url,
         arrived_at,
         removed_at: None,
         read: false,
     })
+}
+
+/// トースト通知の Content XML から launch 属性値を取得する。
+/// `UserNotification::Notification()` が返す型は `Notification` だが、
+/// 実体は `ToastNotification` なので cast して `Content()` を呼ぶ。
+fn extract_launch_url(user_notif: &UserNotification) -> Option<String> {
+    use windows::UI::Notifications::ToastNotification;
+    use windows::core::Interface;
+    let notification = user_notif.Notification().ok()?;
+    let toast = notification.cast::<ToastNotification>().ok()?;
+    let xml = toast.Content().ok()?.GetXml().ok()?;
+    extract_launch_url_from_xml(&xml.to_string())
+}
+
+/// XML文字列の <toast launch="..."> 属性値を解析して返す。
+/// 属性が存在しない・空の場合は None を返す。
+fn extract_launch_url_from_xml(xml: &str) -> Option<String> {
+    let toast_start = xml.find("<toast")?;
+    let tag_end = xml[toast_start..].find('>')?;
+    let toast_tag = &xml[toast_start..toast_start + tag_end];
+
+    let launch_pos = toast_tag.find("launch=\"")?;
+    let after_launch = &toast_tag[launch_pos + 8..];
+    let end = after_launch.find('"')?;
+    let url = &after_launch[..end];
+
+    if url.is_empty() {
+        None
+    } else {
+        Some(url.to_string())
+    }
 }
 
 /// 通知の Visual > Binding > TextElements からタイトルと本文を取得する。
@@ -204,6 +239,27 @@ fn winrt_datetime_to_iso8601(universal_time: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_launch_url_from_xml_with_url() {
+        let xml = r#"<toast launch="https://example.com/path?q=1"><visual></visual></toast>"#;
+        assert_eq!(
+            extract_launch_url_from_xml(xml),
+            Some("https://example.com/path?q=1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_launch_url_from_xml_no_launch() {
+        let xml = r#"<toast><visual></visual></toast>"#;
+        assert_eq!(extract_launch_url_from_xml(xml), None);
+    }
+
+    #[test]
+    fn test_extract_launch_url_from_xml_empty_launch() {
+        let xml = r#"<toast launch=""><visual></visual></toast>"#;
+        assert_eq!(extract_launch_url_from_xml(xml), None);
+    }
 
     #[test]
     fn test_winrt_datetime_to_iso8601() {

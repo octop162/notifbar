@@ -215,7 +215,7 @@ impl eframe::App for NotifBarApp {
     }
 }
 
-/// 通知1件分のカードを描画する。
+/// 通知1件分のカードを描画する。launch_url がある場合はクリックでURLを開く。
 fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
     let is_removed = n.removed_at.is_some();
 

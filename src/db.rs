@@ -24,6 +24,8 @@ pub struct Notification {
     pub title: Option<String>,
     /// トースト通知の本文
     pub body: Option<String>,
+    /// トースト通知の起動URL（<toast launch="..."> 属性）
+    pub launch_url: Option<String>,
     /// 通知の到着時刻（ISO 8601 文字列: "YYYY-MM-DDTHH:MM:SS"）
     pub arrived_at: String,
     /// 通知が削除された時刻（None = まだアクティブ）
@@ -51,6 +53,7 @@ impl Database {
                 app_name TEXT NOT NULL,
                 title TEXT,
                 body TEXT,
+                launch_url TEXT,              -- toast launch 属性
                 arrived_at DATETIME NOT NULL,
                 removed_at DATETIME,
                 read INTEGER DEFAULT 0        -- 0: 未読, 1: 既読
@@ -64,9 +67,9 @@ impl Database {
     /// 戻り値は新規挿入行の rowid（重複時は 0）。
     pub fn insert(&self, n: &Notification) -> Result<i64> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO notifications (win_id, app_name, title, body, arrived_at, removed_at, read)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![n.win_id, n.app_name, n.title, n.body, n.arrived_at, n.removed_at, n.read as i64],
+            "INSERT OR IGNORE INTO notifications (win_id, app_name, title, body, launch_url, arrived_at, removed_at, read)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![n.win_id, n.app_name, n.title, n.body, n.launch_url, n.arrived_at, n.removed_at, n.read as i64],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -74,7 +77,7 @@ impl Database {
     /// 全通知を到着時刻の降順（新しい順）で返す。
     pub fn query_all(&self) -> Result<Vec<Notification>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, win_id, app_name, title, body, arrived_at, removed_at, read
+            "SELECT id, win_id, app_name, title, body, launch_url, arrived_at, removed_at, read
              FROM notifications ORDER BY arrived_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -84,10 +87,11 @@ impl Database {
                 app_name: row.get(2)?,
                 title: row.get(3)?,
                 body: row.get(4)?,
-                arrived_at: row.get(5)?,
-                removed_at: row.get(6)?,
+                launch_url: row.get(5)?,
+                arrived_at: row.get(6)?,
+                removed_at: row.get(7)?,
                 // SQLite に boolean 型はないため INTEGER (0/1) で保存し変換する
-                read: row.get::<_, i64>(7)? != 0,
+                read: row.get::<_, i64>(8)? != 0,
             })
         })?;
         rows.collect()
@@ -135,6 +139,7 @@ mod tests {
             app_name: "TestApp".to_string(),
             title: Some("Hello".to_string()),
             body: Some("World".to_string()),
+            launch_url: None,
             arrived_at: "2026-03-15T00:00:00".to_string(),
             removed_at: None,
             read: false,
@@ -156,6 +161,7 @@ mod tests {
             app_name: "App".to_string(),
             title: None,
             body: None,
+            launch_url: None,
             arrived_at: "2026-03-15T00:00:00".to_string(),
             removed_at: None,
             read: false,
@@ -177,6 +183,7 @@ mod tests {
             app_name: "App".to_string(),
             title: None,
             body: None,
+            launch_url: None,
             arrived_at: "2026-03-15T00:00:00".to_string(),
             removed_at: None,
             read: false,
@@ -196,6 +203,7 @@ mod tests {
             app_name: "App".to_string(),
             title: None,
             body: None,
+            launch_url: None,
             arrived_at: "2026-03-15T00:00:00".to_string(),
             removed_at: None,
             read: false,
