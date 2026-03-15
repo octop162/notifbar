@@ -15,6 +15,15 @@ enum TrayCommand {
     Hide,
 }
 
+/// テーマの種類。ライトモードとダークモードを切り替えるために使用する。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Theme {
+    /// ダークモード
+    Dark,
+    /// ライトモード
+    Light,
+}
+
 /// タイムラインUIアプリ。eframe::Appを実装し、通知履歴をスクロール可能なリストで表示する。
 pub struct NotifBarApp {
     /// 表示中の通知リスト（新しい順）
@@ -35,6 +44,12 @@ pub struct NotifBarApp {
     tray_rx: mpsc::Receiver<TrayCommand>,
     /// トレイポーリングスレッドが起動済みかどうか
     tray_thread_started: bool,
+    /// 設定画面の表示状態
+    settings_open: bool,
+    /// 現在のテーマ
+    theme: Theme,
+    /// DB クリア確認モーダルの表示状態
+    confirm_clear_open: bool,
 }
 
 impl NotifBarApp {
@@ -57,6 +72,9 @@ impl NotifBarApp {
             tray_tx,
             tray_rx,
             tray_thread_started: false,
+            settings_open: false,
+            theme: Theme::Dark,
+            confirm_clear_open: false,
         }
     }
 
@@ -195,6 +213,84 @@ impl eframe::App for NotifBarApp {
             }
         }
 
+        // DB クリア確認モーダル
+        if self.confirm_clear_open {
+            egui::Window::new("確認")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("通知履歴をすべて削除しますか？");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("削除する").clicked() {
+                            if let Err(e) = self.db.delete_all() {
+                                eprintln!("DBクリアエラー: {e}");
+                            } else {
+                                self.notifications.clear();
+                            }
+                            self.confirm_clear_open = false;
+                        }
+                        if ui.button("キャンセル").clicked() {
+                            self.confirm_clear_open = false;
+                        }
+                    });
+                });
+        }
+
+        // 設定画面モーダル
+        if self.settings_open {
+            egui::Window::new("設定")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.set_min_width(260.0);
+
+                    ui.heading("テーマ");
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(self.theme == Theme::Dark, "ダーク")
+                            .clicked()
+                        {
+                            self.theme = Theme::Dark;
+                            ctx.set_visuals(egui::Visuals::dark());
+                        }
+                        if ui
+                            .selectable_label(self.theme == Theme::Light, "ライト")
+                            .clicked()
+                        {
+                            self.theme = Theme::Light;
+                            ctx.set_visuals(egui::Visuals::light());
+                        }
+                    });
+
+                    ui.add_space(12.0);
+                    ui.heading("データ");
+                    ui.separator();
+                    if ui.button("通知履歴をすべて削除").clicked() {
+                        self.confirm_clear_open = true;
+                    }
+
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if ui.button("閉じる").clicked() {
+                            self.settings_open = false;
+                        }
+                    });
+                });
+        }
+
+        // 画面下部ステータスバー
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("⚙").on_hover_text("設定").clicked() {
+                    self.settings_open = !self.settings_open;
+                }
+            });
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.notifications.is_empty() {
                 ui.centered_and_justified(|ui| {
@@ -217,38 +313,38 @@ impl eframe::App for NotifBarApp {
 
 /// 通知1件分のカードを描画する。launch_url がある場合はクリックでURLを開く。
 fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
-    let is_removed = n.removed_at.is_some();
+    let dark_mode = ui.visuals().dark_mode;
 
-    let bg_color = if is_removed {
-        egui::Color32::from_gray(40)
-    } else {
+    let bg_color = if dark_mode {
         egui::Color32::from_rgb(25, 38, 58)
+    } else {
+        egui::Color32::from_rgb(220, 235, 255)
     };
 
-    let border_color = if is_removed {
-        egui::Color32::from_gray(60)
+    let app_name_color = if dark_mode {
+        egui::Color32::from_rgb(130, 190, 255)
     } else {
-        egui::Color32::from_rgb(80, 140, 220)
+        egui::Color32::from_rgb(30, 90, 180)
     };
 
     egui::Frame::new()
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(4))
         .fill(bg_color)
-        .stroke(egui::Stroke::new(1.0, border_color))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgb(80, 140, 220),
+        ))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            // ヘッダ行: アプリ名 + 未読マーク + 到着時刻
+            // ヘッダ行: アプリ名 + 到着時刻
             ui.horizontal(|ui| {
-                ui.colored_label(egui::Color32::from_rgb(130, 190, 255), &n.app_name);
+                ui.colored_label(app_name_color, &n.app_name);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let jst = iso8601_utc_to_jst(&n.arrived_at);
                     let time_str = jst.get(11..19).unwrap_or(&jst);
                     ui.weak(time_str);
-                    if is_removed {
-                        ui.weak("[削除済]");
-                    }
                 });
             });
 
@@ -259,7 +355,7 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
 
             // 本文
             if let Some(body) = &n.body {
-                ui.label(egui::RichText::new(body).color(egui::Color32::from_gray(200)));
+                ui.label(egui::RichText::new(body).color(ui.visuals().weak_text_color()));
             }
         });
 }
