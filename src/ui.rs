@@ -314,17 +314,34 @@ impl eframe::App for NotifBarApp {
 /// 通知1件分のカードを描画する。launch_url がある場合はクリックでURLを開く。
 fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
     let is_removed = n.removed_at.is_some();
+    let dark_mode = ui.visuals().dark_mode;
 
-    let bg_color = if is_removed {
-        egui::Color32::from_gray(40)
+    let bg_color = if dark_mode {
+        if is_removed {
+            egui::Color32::from_gray(40)
+        } else {
+            egui::Color32::from_rgb(25, 38, 58)
+        }
+    } else if is_removed {
+        egui::Color32::from_gray(220)
     } else {
-        egui::Color32::from_rgb(25, 38, 58)
+        egui::Color32::from_rgb(220, 235, 255)
     };
 
     let border_color = if is_removed {
-        egui::Color32::from_gray(60)
+        if dark_mode {
+            egui::Color32::from_gray(60)
+        } else {
+            egui::Color32::from_gray(180)
+        }
     } else {
         egui::Color32::from_rgb(80, 140, 220)
+    };
+
+    let app_name_color = if dark_mode {
+        egui::Color32::from_rgb(130, 190, 255)
+    } else {
+        egui::Color32::from_rgb(30, 90, 180)
     };
 
     egui::Frame::new()
@@ -337,7 +354,7 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
 
             // ヘッダ行: アプリ名 + 未読マーク + 到着時刻
             ui.horizontal(|ui| {
-                ui.colored_label(egui::Color32::from_rgb(130, 190, 255), &n.app_name);
+                ui.colored_label(app_name_color, &n.app_name);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let jst = iso8601_utc_to_jst(&n.arrived_at);
                     let time_str = jst.get(11..19).unwrap_or(&jst);
@@ -355,7 +372,7 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
 
             // 本文
             if let Some(body) = &n.body {
-                ui.label(egui::RichText::new(body).color(egui::Color32::from_gray(200)));
+                ui.label(egui::RichText::new(body).color(ui.visuals().weak_text_color()));
             }
         });
 }
