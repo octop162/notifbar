@@ -12,6 +12,10 @@ https://github.com/octop162/notifbar
 - 作業開始前に `gh issue list` で未着手のissueを確認する
 - issueに対応するブランチを切って作業し、PRでマージする
 
+## コーディング規約
+
+- struct・フィールド・pub メソッドには日本語でコメントを付ける
+
 ## 技術スタック
 
 - **Rust**
