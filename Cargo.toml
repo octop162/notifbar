@@ -18,7 +18,6 @@ windows = { version = "0.59", features = [
     "Win32_Graphics_Gdi",
 ] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-tokio = { version = "1", features = ["full"] }
 eframe = "0.31"
 rusqlite = { version = "0.31", features = ["bundled"] }
 tray-icon = "0.19"
