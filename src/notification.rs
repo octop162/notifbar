@@ -1,18 +1,24 @@
 // Windows notification listener (UserNotificationListener)
-// WinRT の UserNotificationListener API を使い、Windows の通知をリアルタイムに取得するモジュール。
+// WinRT の UserNotificationListener API を使い、Windows の通知を取得するモジュール。
+// 未パッケージアプリでは NotificationChanged イベントが使えないため、
+// GetNotificationsAsync を定期ポーリングして差分検出する方式を採る。
 
 #![allow(dead_code)]
 
 use crate::db;
-use tokio::sync::mpsc;
-use windows::Foundation::TypedEventHandler;
+use std::collections::HashSet;
+use std::sync::mpsc;
+use windows::Foundation::{AsyncStatus, IAsyncOperation};
 use windows::UI::Notifications::Management::{
     UserNotificationListener, UserNotificationListenerAccessStatus,
 };
-use windows::UI::Notifications::{
-    NotificationKinds, UserNotification, UserNotificationChangedEventArgs,
-    UserNotificationChangedKind,
+use windows::UI::Notifications::{NotificationKinds, UserNotification};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
 };
+
+/// ポーリング間隔（秒）
+const POLL_INTERVAL_SECS: u64 = 2;
 
 /// 通知イベントの種別。チャネル経由でUIスレッドに送信される。
 #[derive(Debug)]
@@ -27,14 +33,14 @@ pub enum NotificationEvent {
 }
 
 /// UserNotificationListener を起動し、通知イベントをチャネルに送信する。
-/// tokio タスクとしてバックグラウンドで実行する想定。
-pub async fn start_listener(
-    tx: mpsc::UnboundedSender<NotificationEvent>,
-) -> windows::core::Result<()> {
+/// STA スレッド上で呼び出す想定。ポーリングループに入り戻らない。
+pub fn start_listener(tx: mpsc::Sender<NotificationEvent>) -> windows::core::Result<()> {
     let listener = UserNotificationListener::Current()?;
 
     // ユーザーに通知アクセス許可をリクエスト
-    let status = listener.RequestAccessAsync()?.await?;
+    let status: UserNotificationListenerAccessStatus =
+        wait_for_async(&listener.RequestAccessAsync()?)?;
+    eprintln!("[notifbar] 通知アクセスステータス: {status:?}");
     if status != UserNotificationListenerAccessStatus::Allowed {
         return Err(windows::core::Error::new(
             windows::core::HRESULT(-1),
@@ -42,53 +48,57 @@ pub async fn start_listener(
         ));
     }
 
-    // 既存の通知を一括取得して送信
-    {
-        let existing = listener
-            .GetNotificationsAsync(NotificationKinds::Toast)?
-            .await?;
-        let size = existing.Size()?;
+    // 既知の通知IDセット（差分検出用）
+    let mut known_ids: HashSet<u32> = HashSet::new();
+
+    eprintln!("[notifbar] ポーリング開始（{POLL_INTERVAL_SECS}秒間隔）");
+
+    loop {
+        let notifications =
+            wait_for_async(&listener.GetNotificationsAsync(NotificationKinds::Toast)?)?;
+        let size = notifications.Size()?;
+
+        let mut current_ids: HashSet<u32> = HashSet::with_capacity(size as usize);
+
         for i in 0..size {
-            let user_notif = existing.GetAt(i)?;
+            let user_notif = notifications.GetAt(i)?;
             let id = user_notif.Id()?;
-            if let Some(parsed) = parse_user_notification(&user_notif, id) {
+            current_ids.insert(id);
+
+            // 新規通知を検出
+            if !known_ids.contains(&id)
+                && let Some(parsed) = parse_user_notification(&user_notif, id)
+            {
                 let _ = tx.send(NotificationEvent::Added(parsed));
             }
         }
+
+        // 削除された通知を検出
+        for &id in known_ids.difference(&current_ids) {
+            let _ = tx.send(NotificationEvent::Removed { win_id: id });
+        }
+
+        known_ids = current_ids;
+
+        std::thread::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS));
     }
+}
 
-    // NotificationChanged イベントをサブスクライブ
-    let tx_event = tx.clone();
-    let listener_for_event = listener.clone();
-    let _token = listener.NotificationChanged(&TypedEventHandler::new(
-        move |_sender: &Option<UserNotificationListener>,
-              args: &Option<UserNotificationChangedEventArgs>| {
-            if let Some(args) = args {
-                let kind = args.ChangeKind()?;
-                let id = args.UserNotificationId()?;
-
-                match kind {
-                    UserNotificationChangedKind::Added => {
-                        if let Ok(user_notif) = listener_for_event.GetNotification(id)
-                            && let Some(parsed) = parse_user_notification(&user_notif, id)
-                        {
-                            let _ = tx_event.send(NotificationEvent::Added(parsed));
-                        }
-                    }
-                    UserNotificationChangedKind::Removed => {
-                        let _ = tx_event.send(NotificationEvent::Removed { win_id: id });
-                    }
-                    _ => {}
-                }
+/// WinRT の IAsyncOperation を Win32 メッセージポンプで待機して結果を取得する。
+fn wait_for_async<T: windows::core::RuntimeType>(
+    op: &IAsyncOperation<T>,
+) -> windows::core::Result<T> {
+    while op.Status()? == AsyncStatus::Started {
+        unsafe {
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).into() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
-            Ok(())
-        },
-    ))?;
-
-    // リスナーを維持するために無限ループで待機
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    op.GetResults()
 }
 
 /// UserNotification からアプリ名・タイトル・本文・到着時刻をパースする。
@@ -152,13 +162,18 @@ fn extract_text(user_notif: &UserNotification) -> (Option<String>, Option<String
     (title, body)
 }
 
-/// WinRT の DateTime.UniversalTime (100ナノ秒単位、1601-01-01起点) を ISO 8601 文字列に変換する。
-fn winrt_datetime_to_iso8601(universal_time: i64) -> String {
-    // 1601-01-01 から 1970-01-01 までの100ナノ秒間隔数
-    const EPOCH_DIFF: i64 = 116_444_736_000_000_000;
-    let unix_secs = (universal_time - EPOCH_DIFF) / 10_000_000;
+/// 現在時刻を ISO 8601 文字列（UTC）で返す。
+pub fn now_iso8601() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    unix_secs_to_iso8601(secs)
+}
 
-    // Howard Hinnant の civil_from_days アルゴリズム
+/// Unix秒（UTC）を ISO 8601 文字列に変換する。
+fn unix_secs_to_iso8601(unix_secs: i64) -> String {
     let z = unix_secs.div_euclid(86400) + 719_468;
     let era = z.div_euclid(146_097);
     let doe = (z - era * 146_097) as u32;
@@ -176,6 +191,14 @@ fn winrt_datetime_to_iso8601(universal_time: i64) -> String {
     let s = rem % 60;
 
     format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{s:02}")
+}
+
+/// WinRT の DateTime.UniversalTime (100ナノ秒単位、1601-01-01起点) を ISO 8601 文字列に変換する。
+fn winrt_datetime_to_iso8601(universal_time: i64) -> String {
+    // 1601-01-01 から 1970-01-01 までの100ナノ秒間隔数
+    const EPOCH_DIFF: i64 = 116_444_736_000_000_000;
+    let unix_secs = (universal_time - EPOCH_DIFF) / 10_000_000;
+    unix_secs_to_iso8601(unix_secs)
 }
 
 #[cfg(test)]
