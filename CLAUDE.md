@@ -159,3 +159,17 @@ Windows (x86_64-pc-windows-msvc) ターゲットでビルドする。
 2. Windows設定 → システム → 通知 を開く
 3. 「通知アクセス」セクションでアプリを許可する
 4. アプリを再起動
+
+## 既知のハマりどころ
+
+### eframe: ウィンドウ非表示中は update() が呼ばれない
+
+`ViewportCommand::Visible(false)` でウィンドウを非表示にすると、eframe が `update()` の
+呼び出しを停止する。`request_repaint_after()` も機能しなくなる。
+
+**影響:** `update()` 内でトレイイベントをポーリングする実装だと、ウィンドウ非表示後に
+トレイメニュー・クリックが完全に無視される。
+
+**対策:** トレイイベントは専用バックグラウンドスレッドで処理し、イベント発生時に
+`ctx.request_repaint()` でUIスレッドを起こす。`egui::Context` は `Clone + Send + Sync`
+なのでスレッド間で安全に共有できる。詳細は Issue #5 のコメントを参照。
