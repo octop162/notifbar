@@ -172,4 +172,4 @@ Windows (x86_64-pc-windows-msvc) ターゲットでビルドする。
 
 **対策:** トレイイベントは専用バックグラウンドスレッドで処理し、イベント発生時に
 `ctx.request_repaint()` でUIスレッドを起こす。`egui::Context` は `Clone + Send + Sync`
-なのでスレッド間で安全に共有できる。詳細は Issue #16 を参照。
+なのでスレッド間で安全に共有できる。詳細は Issue #5 のコメントを参照。
