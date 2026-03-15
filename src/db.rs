@@ -45,7 +45,6 @@ impl Database {
     }
 
     /// テーブルが存在しなければ作成する（冪等）。
-    /// 既存DBへの列追加も行う（ALTER TABLE は列が既にあればエラーを無視）。
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS notifications (
@@ -60,10 +59,6 @@ impl Database {
                 read INTEGER DEFAULT 0        -- 0: 未読, 1: 既読
             );",
         )?;
-        // 既存DBにlaunch_url列がなければ追加（既にある場合のエラーは無視）
-        let _ = self
-            .conn
-            .execute_batch("ALTER TABLE notifications ADD COLUMN launch_url TEXT;");
         Ok(())
     }
 
