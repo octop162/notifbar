@@ -215,7 +215,7 @@ impl eframe::App for NotifBarApp {
     }
 }
 
-/// 通知1件分のカードを描画する。
+/// 通知1件分のカードを描画する。launch_url がある場合はクリックでURLを開く。
 fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
     let is_removed = n.removed_at.is_some();
 
@@ -231,7 +231,7 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
         egui::Color32::from_rgb(80, 140, 220)
     };
 
-    egui::Frame::new()
+    let frame_resp = egui::Frame::new()
         .inner_margin(egui::Margin::same(8))
         .corner_radius(egui::CornerRadius::same(4))
         .fill(bg_color)
@@ -248,6 +248,9 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
                     if is_removed {
                         ui.weak("[削除済]");
                     }
+                    if n.launch_url.is_some() {
+                        ui.weak("🔗");
+                    }
                 });
             });
 
@@ -261,4 +264,18 @@ fn render_notification_card(ui: &mut egui::Ui, n: &Notification) {
                 ui.label(egui::RichText::new(body).color(egui::Color32::from_gray(200)));
             }
         });
+
+    // launch_url があればカード全体をクリック可能にする
+    if let Some(url) = &n.launch_url {
+        let interact = ui
+            .interact(
+                frame_resp.response.rect,
+                ui.id().with(n.win_id),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if interact.clicked() {
+            let _ = std::process::Command::new("explorer").arg(url).spawn();
+        }
+    }
 }
